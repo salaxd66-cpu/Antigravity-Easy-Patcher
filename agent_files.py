@@ -40,6 +40,14 @@ RECIPES = (
            'c7d20bab48c338402b317c419d768f5b271a02c8fdbf7defcef83a8e232e0bd8',
            frozenset({'63e883c31f3ffbffa5b2b75cf5bef2048525207c85f76cc709b34bb3344b8d4c'}),
            version='1.5.6', cli_location=0x3355789),
+    Recipe('Windows x64', 243185304, 0x2B20BD7,
+           '545b72926b3b8807f0622a36c0ce6a11a242c9e4e0f3ee84cbb0396193c8194c',
+           'f96222c11bd242543d0424a71a3e109923b720de9f63c907969867630187b243',
+           frozenset(), version='1.5.7', cli_location=0x33A4329),
+    Recipe('Linux x64', 280564136, 0x98570F7,
+           '5df525a2d6908989c57b897723caea66e00d7c4d2e24411f91ad306989574642',
+           '62934bee04d48ee666c48e468be890e8e9f4b426c5c57aead686232fdfd796e7',
+           frozenset(), version='1.5.7', cli_location=0xA07D129),
 )
 
 # The region error is enum value 3. In the verified free-tier block, resume

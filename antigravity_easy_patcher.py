@@ -15,7 +15,7 @@ from installed_apps import PROGRAMS, make_reports, scan_installations
 
 
 APP_NAME = 'Antigravity Easy Patcher'
-VERSION = '1.0.1'
+VERSION = '1.0.2'
 STYLES = '''
 QWidget { background: #000000; color: #f5f5f5; }
 QLabel { background: transparent; }
