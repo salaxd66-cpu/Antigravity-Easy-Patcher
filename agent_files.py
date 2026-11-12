@@ -150,7 +150,7 @@ def install_agent(path, action):
     backup = snapshot_path(target)
     original = target if state.kind == 'original' else backup
 
-    with tempfile.TemporaryDirectory(prefix='.agy-manager-', dir=target.parent) as directory:
+    with tempfile.TemporaryDirectory(prefix='.antigravity-easy-patcher-', dir=target.parent) as directory:
         stage = Path(directory) / 'agent'
         with original.open('rb') as source, stage.open('xb') as out:
             shutil.copyfileobj(source, out, length=1024 * 1024)

@@ -1,4 +1,4 @@
-"""Native desktop interface for AGY Manager."""
+"""Native desktop interface for Antigravity Easy Patcher."""
 
 from pathlib import Path
 import sys
@@ -14,7 +14,8 @@ from agent_files import install_agent
 from installed_apps import PROGRAMS, make_reports, scan_installations
 
 
-VERSION = '1.0.0'
+APP_NAME = 'Antigravity Easy Patcher'
+VERSION = '1.0.1'
 STYLES = '''
 QWidget { background: #000000; color: #f5f5f5; }
 QLabel { background: transparent; }
@@ -183,12 +184,12 @@ class ProgramCard(QFrame):
 class Manager(QMainWindow):
     def __init__(self, settings=None):
         super().__init__()
-        self.settings = settings if settings is not None else QSettings('AGY Manager', 'AGY Manager')
+        self.settings = settings if settings is not None else QSettings(APP_NAME, APP_NAME)
         self.overrides = {key: self.settings.value(f'agent/{key}', '') for key, _, _ in PROGRAMS}
         self.pool = QThreadPool(self)
         self.worker = None
         self.callback = None
-        self.setWindowTitle('AGY Manager')
+        self.setWindowTitle(APP_NAME)
         self.resize(880, 496)
         self.setMinimumSize(680, 380)
 
@@ -198,7 +199,7 @@ class Manager(QMainWindow):
         layout.setSpacing(16)
 
         heading = QHBoxLayout()
-        heading.addWidget(label('AGY Manager', 'heading'))
+        heading.addWidget(label(APP_NAME, 'heading'))
         heading.addStretch()
         self.refresh_button = QPushButton('Обновить')
         self.refresh_button.clicked.connect(self.refresh)
@@ -315,7 +316,7 @@ class Manager(QMainWindow):
 
 
 def style_application(app):
-    app.setApplicationName('AGY Manager')
+    app.setApplicationName(APP_NAME)
     app.setApplicationVersion(VERSION)
     font_file = Path(__file__).resolve().parent / 'assets/Inter.ttf'
     font_id = QFontDatabase.addApplicationFont(str(font_file))

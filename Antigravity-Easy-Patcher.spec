@@ -7,7 +7,7 @@ import sys
 
 root = Path(SPECPATH)
 analysis = Analysis(
-    [str(root / 'agy_manager.py')],
+    [str(root / 'antigravity_easy_patcher.py')],
     datas=[(str(root / 'assets'), 'assets')],
 )
 if sys.platform == 'win32':
@@ -20,8 +20,8 @@ if sys.platform == 'win32':
 
 executable = EXE(
     PYZ(analysis.pure), analysis.scripts, [],
-    exclude_binaries=True, name='AGY-Manager', console=False, upx=False,
+    exclude_binaries=True, name='Antigravity-Easy-Patcher', console=False, upx=False,
 )
 distribution = COLLECT(
-    executable, analysis.binaries, analysis.datas, name='AGY-Manager', upx=False,
+    executable, analysis.binaries, analysis.datas, name='Antigravity-Easy-Patcher', upx=False,
 )

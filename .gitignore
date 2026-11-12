@@ -4,5 +4,5 @@ __pycache__/
 build/
 dist/
 *.spec
-!AGY-Manager.spec
+!Antigravity-Easy-Patcher.spec
 *.agybak
