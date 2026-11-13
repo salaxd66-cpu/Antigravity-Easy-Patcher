@@ -15,7 +15,7 @@ from installed_apps import PROGRAMS, make_reports, scan_installations
 
 
 APP_NAME = 'Antigravity Easy Patcher'
-VERSION = '1.0.2'
+VERSION = '1.1.0'
 STYLES = '''
 QWidget { background: #000000; color: #f5f5f5; }
 QLabel { background: transparent; }
@@ -171,6 +171,8 @@ class ProgramCard(QFrame):
             notes.append('Нет копии для отката.')
         elif state.backup == 'foreign':
             notes.append('Копия от другой сборки.')
+        elif state.backup == 'rotatable':
+            notes.append('Прежняя копия будет сохранена отдельно.')
         self.note.setText('  ·  '.join(notes))
         self.note.setVisible(bool(notes))
 

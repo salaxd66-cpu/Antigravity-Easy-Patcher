@@ -2,9 +2,13 @@
 
 from dataclasses import dataclass
 import hashlib
+import json
+import mmap
 import os
 from pathlib import Path
+import re
 import shutil
+import struct
 import tempfile
 
 
@@ -60,6 +64,16 @@ REPLACEMENT = bytes.fromhex(
 )
 CLI_EXPECTED = bytes.fromhex('80780800')
 CLI_REPLACEMENT = bytes.fromhex('4885c090')
+# The jump distances are intentionally wildcarded. The surrounding machine
+# instructions must still match exactly, and the result must be unique.
+CLI_SIGNATURE = re.compile(
+    re.escape(bytes.fromhex('20440f117a30904885c00f84'))
+    + b'.{4}' + re.escape(CLI_EXPECTED)
+    + re.escape(bytes.fromhex('0f85')) + b'.{4}'
+    + re.escape(bytes.fromhex('488b5050')),
+    re.DOTALL,
+)
+CLI_OFFSET_IN_SIGNATURE = 16
 
 
 class AgentError(Exception):
@@ -76,7 +90,7 @@ class AgentState:
 
     @property
     def can_patch(self):
-        return (self.kind == 'original' and self.backup != 'foreign') or (
+        return (self.kind == 'original' and self.backup in ('missing', 'verified', 'rotatable')) or (
             self.kind == 'upgrade' and self.backup == 'verified'
         )
 
@@ -94,29 +108,179 @@ def snapshot_path(path):
     return path.parent / (path.name + '.agybak')
 
 
+def executable_ranges(binary):
+    """Return the x64 format and file offsets of executable code."""
+    size = len(binary)
+    if size >= 64 and binary[:2] == b'MZ':
+        header = struct.unpack_from('<I', binary, 0x3c)[0]
+        if header + 26 > size or binary[header:header + 4] != b'PE\0\0':
+            return None, ()
+        machine, count = struct.unpack_from('<HH', binary, header + 4)
+        optional_size = struct.unpack_from('<H', binary, header + 20)[0]
+        if machine != 0x8664 or not 1 <= count <= 96 or header + 24 + optional_size + 40 * count > size:
+            return None, ()
+        if struct.unpack_from('<H', binary, header + 24)[0] != 0x20b:
+            return None, ()
+        sections = header + 24 + optional_size
+        ranges = []
+        for index in range(count):
+            section = sections + 40 * index
+            length, start = struct.unpack_from('<II', binary, section + 16)
+            flags = struct.unpack_from('<I', binary, section + 36)[0]
+            if flags & 0x20000000 and length and start + length <= size:
+                ranges.append((start, start + length))
+        return 'Windows x64', tuple(ranges)
+    if size >= 64 and binary[:4] == b'\x7fELF' and binary[4:6] == b'\x02\x01':
+        machine = struct.unpack_from('<H', binary, 18)[0]
+        headers = struct.unpack_from('<Q', binary, 32)[0]
+        stride, count = struct.unpack_from('<HH', binary, 54)
+        if machine != 62 or stride < 56 or not 1 <= count <= 128 or headers + stride * count > size:
+            return None, ()
+        ranges = []
+        for index in range(count):
+            entry = headers + stride * index
+            segment_type, flags = struct.unpack_from('<II', binary, entry)
+            start = struct.unpack_from('<Q', binary, entry + 8)[0]
+            length = struct.unpack_from('<Q', binary, entry + 32)[0]
+            if segment_type == 1 and flags & 1 and length and start + length <= size:
+                ranges.append((start, start + length))
+        return 'Linux x64', tuple(ranges)
+    return None, ()
+
+
+def in_code(offset, length, ranges):
+    return any(start <= offset and offset + length <= end for start, end in ranges)
+
+
+def unique_pattern(binary, pattern, ranges):
+    found = None
+    start = 0
+    while (offset := binary.find(pattern, start)) >= 0:
+        if in_code(offset, len(pattern), ranges):
+            if found is not None:
+                return None
+            found = offset
+        start = offset + 1
+    return found
+
+
+def unique_cli_pattern(binary, ranges):
+    found = None
+    for match in CLI_SIGNATURE.finditer(binary):
+        offset = match.start() + CLI_OFFSET_IN_SIGNATURE
+        if in_code(match.start(), match.end() - match.start(), ranges):
+            if found is not None:
+                return None
+            found = offset
+    return found
+
+
+def patched_fingerprint(binary, replacements):
+    digest = hashlib.sha256()
+    view = memoryview(binary)
+    try:
+        cursor = 0
+        for offset, original, replacement in sorted(replacements):
+            if offset < cursor or bytes(view[offset:offset + len(original)]) != original:
+                return None
+            digest.update(view[cursor:offset])
+            digest.update(replacement)
+            cursor = offset + len(original)
+        digest.update(view[cursor:])
+    finally:
+        view.release()
+    return digest.hexdigest()
+
+
+def cached_version(path, length):
+    """Use the updater's version only when its checksum matches this file."""
+    manifest = path.parent / 'agy.version.json'
+    try:
+        data = json.loads(manifest.read_text(encoding='utf-8'))
+        version = data['version']
+        if data['size'] != length or not re.fullmatch(r'\d+\.\d+\.\d+', version):
+            return 'по сигнатуре'
+        with path.open('rb') as source:
+            digest = hashlib.file_digest(source, 'sha512').hexdigest()
+        return version if digest == data['sha512'].lower() else 'по сигнатуре'
+    except (OSError, KeyError, ValueError, TypeError):
+        return 'по сигнатуре'
+
+
+def adaptive_recipe(path, digest, length):
+    if not 64 * 1024 * 1024 <= length <= 1024 * 1024 * 1024:
+        return None
+    with path.open('rb') as source:
+        with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as binary:
+            platform, ranges = executable_ranges(binary)
+            if not platform or not ranges:
+                return None
+            region = unique_pattern(binary, EXPECTED, ranges)
+            cli = unique_cli_pattern(binary, ranges)
+            if region is None or cli is None:
+                return None
+            current = patched_fingerprint(binary, (
+                (region, EXPECTED, REPLACEMENT),
+                (cli, CLI_EXPECTED, CLI_REPLACEMENT),
+            ))
+    if current is None:
+        return None
+    return Recipe(platform, length, region, digest, current, frozenset(),
+                  version=cached_version(path, length), cli_location=cli)
+
+
+def original_recipe(path, digest, length):
+    for entry in RECIPES:
+        if entry.length == length and entry.pristine == digest:
+            return entry
+    return adaptive_recipe(path, digest, length)
+
+
+def backup_status(path, recipe, kind):
+    backup = snapshot_path(path)
+    if not os.path.lexists(backup):
+        return 'missing'
+    if backup.is_symlink() or not backup.is_file():
+        return 'foreign'
+    length = backup.stat().st_size
+    digest = fingerprint(backup)
+    if length == recipe.length and digest == recipe.pristine:
+        return 'verified'
+    if kind == 'original' and original_recipe(backup, digest, length) is not None:
+        return 'rotatable'
+    return 'foreign'
+
+
 def inspect_agent(path):
     try:
         if path is None or not path.is_file():
             return AgentState('missing')
-        lengths = [entry for entry in RECIPES if entry.length == path.stat().st_size]
-        if not lengths:
-            return AgentState('unknown', detail='Размер файла отличается от поддерживаемых сборок.')
+        length = path.stat().st_size
         digest = fingerprint(path)
-        for entry in lengths:
-            labels = {entry.pristine: 'original', entry.current: 'patched'}
-            kind = labels.get(digest, 'upgrade' if digest in entry.upgrades else None)
-            if kind is None:
+        entry = None
+        kind = None
+        for candidate in RECIPES:
+            if candidate.length != length:
                 continue
-            backup = snapshot_path(path)
-            if not os.path.lexists(backup):
-                backup_status = 'missing'
-            elif backup.is_file() and backup.stat().st_size == entry.length and fingerprint(backup) == entry.pristine:
-                backup_status = 'verified'
+            labels = {candidate.pristine: 'original', candidate.current: 'patched'}
+            kind = labels.get(digest, 'upgrade' if digest in candidate.upgrades else None)
+            if kind is not None:
+                entry = candidate
+                break
+        if entry is None:
+            entry = adaptive_recipe(path, digest, length)
+            if entry is not None:
+                kind = 'original'
             else:
-                backup_status = 'foreign'
-            return AgentState(kind, digest, entry, backup_status)
-        return AgentState('unknown', digest, detail=f'Контрольная сумма SHA-256: {digest}')
-    except OSError as error:
+                backup = snapshot_path(path)
+                if backup.is_file() and not backup.is_symlink() and backup.stat().st_size == length:
+                    previous = original_recipe(backup, fingerprint(backup), length)
+                    if previous is not None and previous.current == digest:
+                        entry, kind = previous, 'patched'
+        if entry is None:
+            return AgentState('unknown', digest, detail=f'Контрольная сумма SHA-256: {digest}')
+        return AgentState(kind, digest, entry, backup_status(path, entry, kind))
+    except (OSError, ValueError, BufferError, struct.error) as error:
         return AgentState('error', detail=str(error))
 
 
@@ -167,14 +331,30 @@ def install_agent(path, action):
         if fingerprint(stage) != recipe.pristine:
             raise AgentError('Контрольная сумма исходной копии изменилась.')
 
-        if state.kind == 'original' and state.backup == 'missing':
+        if state.kind == 'original' and state.backup in ('missing', 'rotatable'):
             # A separate inode ensures subsequent changes to stage cannot affect the backup.
             pending_backup = Path(directory) / 'backup'
             shutil.copyfile(stage, pending_backup)
             with pending_backup.open('r+b') as stream:
                 copy_access(target, pending_backup)
                 os.fsync(stream.fileno())
-            os.link(pending_backup, backup)
+            if fingerprint(target) != state.checksum:
+                raise AgentError('Агент был обновлён во время операции. Нажмите «Обновить список».')
+            if state.backup == 'rotatable':
+                old_digest = fingerprint(backup)
+                if original_recipe(backup, old_digest, backup.stat().st_size) is None:
+                    raise AgentError('Прежняя исходная копия изменилась во время операции.')
+                archived = backup.with_name(backup.name + '-' + old_digest[:12] + '.old')
+                if os.path.lexists(archived):
+                    if archived.is_symlink() or not archived.is_file() or fingerprint(archived) != old_digest:
+                        raise AgentError(f'Имя для прежней копии уже занято: {archived}')
+                else:
+                    os.link(backup, archived)
+                if fingerprint(backup) != old_digest:
+                    raise AgentError('Прежняя исходная копия изменилась во время операции.')
+                os.replace(pending_backup, backup)
+            else:
+                os.link(pending_backup, backup)
             sync_directory(target.parent)
 
         if action == 'patch':
